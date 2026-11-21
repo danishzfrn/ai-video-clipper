@@ -1,4 +1,3 @@
-
 <!DOCTYPE html>
 <html lang="id">
 <head>
@@ -10,32 +9,126 @@
   <link rel="apple-touch-icon" href="/icon-192.png">
   <title>AI Video Clipper</title>
   <style>
+    * { box-sizing: border-box; }
     body {
-      margin: 0;
-      min-height: 100vh;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      background: #0f172a;
-      color: #f1f5f9;
-      font-family: system-ui, sans-serif;
-      text-align: center;
-      padding: 16px;
+      margin: 0; min-height: 100vh; background: #0f172a; color: #f1f5f9;
+      font-family: system-ui, sans-serif; padding: 20px;
+      display: flex; justify-content: center;
     }
-    h1 { font-size: 1.6rem; margin-bottom: 8px; }
-    p { color: #94a3b8; }
+    main { width: 100%; max-width: 480px; }
+    h1 { font-size: 1.5rem; margin: 8px 0 4px; }
+    .sub { color: #94a3b8; margin: 0 0 20px; }
+    button {
+      width: 100%; padding: 16px; font-size: 1.05rem; font-weight: 600;
+      color: #fff; background: #3b82f6; border: 0; border-radius: 14px;
+    }
+    button:disabled { background: #334155; color: #94a3b8; }
+    #status { margin: 16px 0 8px; font-weight: 600; min-height: 1.4em; }
+    #status.ok { color: #4ade80; }
+    #status.err { color: #f87171; }
+    pre {
+      background: #020617; border: 1px solid #1e293b; border-radius: 12px;
+      padding: 12px; font-size: 0.78rem; color: #cbd5e1;
+      white-space: pre-wrap; word-break: break-word;
+      max-height: 45vh; overflow: auto; margin: 0;
+    }
   </style>
 </head>
 <body>
-  <h1>AI Video Clipper</h1>
-  <p>Halo, Danish! Fase 0 berhasil.</p>
-  <script>
-    if ("serviceWorker" in navigator) {
-      window.addEventListener("load", () => {
-        navigator.serviceWorker.register("/sw.js").catch(() => {});
-      });
+  <main>
+    <h1>AI Video Clipper</h1>
+    <p class="sub">Fase 1A: uji mesin video di HP Anda</p>
+    <button id="btn">Muat mesin video (sekitar 30 MB)</button>
+    <div id="status"></div>
+    <pre id="log"></pre>
+  </main>
+
+  <script type="module">
+    const CDN = "https://cdn.jsdelivr.net/npm";
+    const FF_VER = "0.12.10";
+    const CORE_VER = "0.12.10";
+    const $ = (id) => document.getElementById(id);
+
+    function log(msg) {
+      const el = $("log");
+      el.textContent += msg + "\n";
+      el.scrollTop = el.scrollHeight;
     }
+    function status(msg, cls) {
+      const el = $("status");
+      el.textContent = msg;
+      el.className = cls || "";
+    }
+
+    async function download(url, mime, label) {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(label + ": HTTP " + res.status);
+      const reader = res.body.getReader();
+      const chunks = [];
+      let got = 0;
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        chunks.push(value);
+        got += value.length;
+        status("Mengunduh " + label + ": " + (got / 1048576).toFixed(1) + " MB");
+      }
+      log("OK unduh " + label + " (" + (got / 1048576).toFixed(1) + " MB)");
+      return URL.createObjectURL(new Blob(chunks, { type: mime }));
+    }
+
+    function withTimeout(promise, ms, msg) {
+      return Promise.race([
+        promise,
+        new Promise((_, rej) => setTimeout(() => rej(new Error(msg)), ms)),
+      ]);
+    }
+
+    $("btn").addEventListener("click", async () => {
+      const btn = $("btn");
+      btn.disabled = true;
+      $("log").textContent = "";
+      try {
+        log("Browser: " + navigator.userAgent);
+        log("Perkiraan RAM: " + (navigator.deviceMemory || "tidak diketahui") + " GB");
+
+        status("Memuat modul...");
+        const { FFmpeg } = await import(
+          CDN + "/@ffmpeg/ffmpeg@" + FF_VER + "/dist/esm/index.js"
+        );
+        log("OK modul ffmpeg dimuat");
+
+        const base = CDN + "/@ffmpeg/core@" + CORE_VER + "/dist/esm";
+        const coreURL = await download(base + "/ffmpeg-core.js", "text/javascript", "ffmpeg-core.js");
+        const wasmURL = await download(base + "/ffmpeg-core.wasm", "application/wasm", "ffmpeg-core.wasm");
+
+        const workerSrc = CDN + "/@ffmpeg/ffmpeg@" + FF_VER + "/dist/esm/worker.js";
+        const classWorkerURL = URL.createObjectURL(
+          new Blob(['import "' + workerSrc + '";'], { type: "text/javascript" })
+        );
+
+        const ffmpeg = new FFmpeg();
+        const lines = [];
+        ffmpeg.on("log", ({ message }) => lines.push(message));
+
+        status("Menyalakan mesin...");
+        await withTimeout(
+          ffmpeg.load({ coreURL, wasmURL, classWorkerURL }),
+          120000,
+          "Waktu habis saat menyalakan mesin (2 menit)"
+        );
+        log("OK mesin menyala");
+
+        await withTimeout(ffmpeg.exec(["-version"]), 30000, "Waktu habis saat tes perintah");
+        log("Jawaban mesin: " + (lines[0] || "(kosong)"));
+
+        status("BERHASIL: mesin video jalan di HP Anda", "ok");
+      } catch (e) {
+        status("GAGAL", "err");
+        log("ERROR: " + (e && e.message ? e.message : String(e)));
+        btn.disabled = false;
+      }
+    });
   </script>
 </body>
 </html>
